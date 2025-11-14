@@ -8,8 +8,6 @@ from reportlab.lib.units import inch
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak, Table, TableStyle, Image, KeepTogether
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY
-import requests
-from io import BytesIO
 
 load_dotenv()
 
@@ -1030,7 +1028,6 @@ def main():
     print("\n" + "=" * 100)
     print("PYTHON & DATA FOR AI - PDF BOOK GENERATOR".center(100))
     print("=" * 100)
-    print("\n🚀 Generating 30-40 page PDF book...\n")
     
     course = build_course()
     
