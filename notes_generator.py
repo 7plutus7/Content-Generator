@@ -1,5 +1,6 @@
 import os
 import json
+import yaml
 from dotenv import load_dotenv
 from openai import OpenAI
 from reportlab.lib.pagesizes import letter
@@ -1024,9 +1025,299 @@ def generate_pdf_book(course, quiz):
     doc.build(Story)
     return pdf_filename
 
+def generate_module_metadata(module, module_idx):
+    """Generate YAML metadata for a module"""
+    metadata = {
+        'module_id': f"M{module_idx:02d}",
+        'module_name': module.get('name', ''),
+        'overview': module.get('overview', ''),
+        'estimated_duration': module.get('estimated_duration', ''),
+        'prerequisites': module.get('prerequisites', []),
+        'learning_objectives': module.get('learning_objectives', []),
+        'key_terms': module.get('key_terms', []),
+    }
+    
+    # Add lesson list
+    hierarchical = module.get('hierarchical_structure', {})
+    lessons = []
+    if hierarchical.get('submodules'):
+        for lesson_idx, submodule in enumerate(hierarchical['submodules'], 1):
+            lessons.append({
+                'lesson_id': f"L{lesson_idx:02d}",
+                'lesson_name': submodule.get('name', ''),
+                'description': submodule.get('description', '')
+            })
+    metadata['lessons'] = lessons
+    
+    return metadata
+
+def generate_lesson_metadata(lesson, lesson_idx, module_name):
+    """Generate YAML metadata for a lesson"""
+    metadata = {
+        'lesson_id': f"L{lesson_idx:02d}",
+        'lesson_name': lesson.get('name', ''),
+        'description': lesson.get('description', ''),
+        'module': module_name,
+    }
+    
+    # Add topics list
+    topics = []
+    for topic_idx, sub_sub in enumerate(lesson.get('sub_submodules', []), 1):
+        topics.append({
+            'topic_id': f"T{topic_idx:02d}",
+            'topic_name': sub_sub.get('name', ''),
+            'description': sub_sub.get('description', '')
+        })
+    metadata['topics'] = topics
+    
+    return metadata
+
+def generate_topic_metadata(topic, topic_idx, lesson_name, module_name):
+    """Generate YAML frontmatter for a topic"""
+    metadata = {
+        'topic_id': f"T{topic_idx:02d}",
+        'topic_name': topic.get('name', ''),
+        'description': topic.get('description', ''),
+        'lesson': lesson_name,
+        'module': module_name,
+    }
+    
+    # Add content summary
+    content = topic.get('content', {})
+    metadata['has_theory'] = bool(content.get('theory'))
+    metadata['has_code_examples'] = bool(content.get('code_examples'))
+    metadata['has_table'] = bool(content.get('table_data', {}).get('rows'))
+    metadata['num_key_points'] = len(content.get('key_points', []))
+    
+    return metadata
+
+def sanitize_name(name):
+    """Convert a name into a filesystem-safe format"""
+    # Remove special characters and replace spaces with hyphens
+    clean = name.lower().strip()
+    clean = clean.replace(" ", "-")
+    clean = clean.replace("&", "and")
+    # Remove characters that aren't alphanumeric or hyphens
+    clean = ''.join(c for c in clean if c.isalnum() or c == '-')
+    # Remove multiple consecutive hyphens
+    while '--' in clean:
+        clean = clean.replace('--', '-')
+    return clean.strip('-')
+
+def generate_topic_markdown(topic_name, topic_description, content, module_name, lesson_name, topic_metadata=None):
+    """Generate markdown content for a single topic with YAML frontmatter"""
+    lines = []
+    
+    # Add YAML frontmatter if metadata provided
+    if topic_metadata:
+        lines.append("---")
+        yaml_content = yaml.dump(topic_metadata, default_flow_style=False, allow_unicode=True, sort_keys=False)
+        lines.append(yaml_content.strip())
+        lines.append("---")
+        lines.append("")
+    
+    # Header
+    lines.append(f"# {topic_name}")
+    lines.append("")
+    if topic_description:
+        lines.append(f"*{topic_description}*")
+        lines.append("")
+    lines.append(f"**Module:** {module_name}")
+    lines.append(f"**Lesson:** {lesson_name}")
+    lines.append("")
+    lines.append("---")
+    lines.append("")
+    
+    # Theory section
+    if content.get('theory'):
+        lines.append("## Overview")
+        lines.append("")
+        lines.append(content['theory'])
+        lines.append("")
+    
+    # Table if available
+    if content.get('table_data') and content['table_data'].get('rows'):
+        table_data = content['table_data']
+        lines.append("## Comparison Table")
+        lines.append("")
+        if table_data.get('caption'):
+            lines.append(f"*{table_data['caption']}*")
+            lines.append("")
+        
+        # Markdown table
+        if table_data.get('headers'):
+            headers = table_data['headers']
+            lines.append("| " + " | ".join(headers) + " |")
+            lines.append("| " + " | ".join(["---"] * len(headers)) + " |")
+            
+            for row in table_data.get('rows', []):
+                lines.append("| " + " | ".join(str(cell) for cell in row) + " |")
+            lines.append("")
+    
+    # Code examples
+    if content.get('code_examples'):
+        lines.append("## Code Examples")
+        lines.append("")
+        
+        for idx, example in enumerate(content['code_examples'], 1):
+            lines.append(f"### Example {idx}: {example.get('title', 'Code Example')}")
+            lines.append("")
+            
+            if example.get('explanation'):
+                lines.append(example['explanation'])
+                lines.append("")
+            
+            if example.get('code'):
+                lines.append("```python")
+                lines.append(example['code'])
+                lines.append("```")
+                lines.append("")
+            
+            if example.get('output'):
+                lines.append("**Output:**")
+                lines.append("```")
+                lines.append(example['output'])
+                lines.append("```")
+                lines.append("")
+    
+    # Key Points
+    if content.get('key_points'):
+        lines.append("## Key Takeaways")
+        lines.append("")
+        for point in content['key_points']:
+            lines.append(f"- {point}")
+        lines.append("")
+    
+    # Visual elements suggestions (if any)
+    if content.get('visual_elements'):
+        lines.append("## Visual Elements Suggestions")
+        lines.append("")
+        lines.append("*The following visual elements would enhance this topic:*")
+        lines.append("")
+        for visual in content['visual_elements']:
+            lines.append(f"- **{visual.get('type', 'image')}**: {visual.get('description', '')}")
+            if visual.get('search_query'):
+                lines.append(f"  - Search term: `{visual['search_query']}`")
+        lines.append("")
+    
+    return "\n".join(lines)
+
+def create_folder_structure(course, base_path="python-and-data-for-ai"):
+    """Create hierarchical folder structure and save markdown files"""
+    import os
+    
+    print(f"\n📁 Creating folder structure at: {base_path}/")
+    
+    # Create base directory if it doesn't exist
+    os.makedirs(base_path, exist_ok=True)
+    
+    total_files_created = 0
+    
+    for module_idx, module in enumerate(course.get('modules', []), 1):
+        module_name = module.get('name', f'Module {module_idx}')
+        module_folder_name = f"M{module_idx:02d}-{sanitize_name(module_name)}"
+        module_path = os.path.join(base_path, module_folder_name)
+        
+        # Create module directory
+        os.makedirs(module_path, exist_ok=True)
+        print(f"  📂 {module_folder_name}/")
+        
+        # Create module overview markdown file
+        module_md_content = []
+        module_md_content.append(f"# {module_name}")
+        module_md_content.append("")
+        if module.get('overview'):
+            module_md_content.append(module['overview'])
+            module_md_content.append("")
+        
+        if module.get('learning_objectives'):
+            module_md_content.append("## Learning Objectives")
+            module_md_content.append("")
+            for obj in module['learning_objectives']:
+                module_md_content.append(f"- {obj}")
+            module_md_content.append("")
+        
+        if module.get('prerequisites'):
+            module_md_content.append("## Prerequisites")
+            module_md_content.append("")
+            for prereq in module['prerequisites']:
+                module_md_content.append(f"- {prereq}")
+            module_md_content.append("")
+        
+        if module.get('estimated_duration'):
+            module_md_content.append(f"**Estimated Duration:** {module['estimated_duration']}")
+            module_md_content.append("")
+        
+        if module.get('key_terms'):
+            module_md_content.append("## Key Terms")
+            module_md_content.append("")
+            module_md_content.append(", ".join(module['key_terms']))
+            module_md_content.append("")
+        
+        module_md_file = os.path.join(module_path, f"M{module_idx:02d}-{sanitize_name(module_name)}.md")
+        with open(module_md_file, 'w', encoding='utf-8') as f:
+            f.write("\n".join(module_md_content))
+        total_files_created += 1
+        
+        # Create module metadata file
+        module_metadata = generate_module_metadata(module, module_idx)
+        module_metadata_file = os.path.join(module_path, 'module.yaml')
+        with open(module_metadata_file, 'w', encoding='utf-8') as f:
+            yaml.dump(module_metadata, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+        total_files_created += 1
+        
+        # Process hierarchical structure
+        hierarchical = module.get('hierarchical_structure', {})
+        if hierarchical.get('submodules'):
+            for lesson_idx, submodule in enumerate(hierarchical['submodules'], 1):
+                lesson_name = submodule.get('name', f'Lesson {lesson_idx}')
+                lesson_folder_name = f"L{lesson_idx:02d}-{sanitize_name(lesson_name)}"
+                lesson_path = os.path.join(module_path, lesson_folder_name)
+                
+                # Create lesson directory
+                os.makedirs(lesson_path, exist_ok=True)
+                print(f"    📂 {lesson_folder_name}/")
+                
+                # Create lesson metadata file
+                lesson_metadata = generate_lesson_metadata(submodule, lesson_idx, module_name)
+                lesson_metadata_file = os.path.join(lesson_path, 'lesson.yaml')
+                with open(lesson_metadata_file, 'w', encoding='utf-8') as f:
+                    yaml.dump(lesson_metadata, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+                total_files_created += 1
+                
+                # Process topics (sub-submodules)
+                for topic_idx, sub_sub in enumerate(submodule.get('sub_submodules', []), 1):
+                    topic_name = sub_sub.get('name', f'Topic {topic_idx}')
+                    topic_filename = f"T{topic_idx:02d}-{sanitize_name(topic_name)}.md"
+                    topic_path = os.path.join(lesson_path, topic_filename)
+                    
+                    # Generate topic metadata
+                    topic_metadata = generate_topic_metadata(sub_sub, topic_idx, lesson_name, module_name)
+                    
+                    # Generate markdown content for this topic
+                    content = sub_sub.get('content', {})
+                    markdown_content = generate_topic_markdown(
+                        topic_name,
+                        sub_sub.get('description', ''),
+                        content,
+                        module_name,
+                        lesson_name,
+                        topic_metadata
+                    )
+                    
+                    # Write topic markdown file
+                    with open(topic_path, 'w', encoding='utf-8') as f:
+                        f.write(markdown_content)
+                    
+                    print(f"      ✓ {topic_filename}")
+                    total_files_created += 1
+    
+    print(f"\n✅ Created {total_files_created} markdown files in hierarchical structure")
+    return base_path
+
 def main():
     print("\n" + "=" * 100)
-    print("PYTHON & DATA FOR AI - PDF BOOK GENERATOR".center(100))
+    print("PYTHON & DATA FOR AI - COURSE GENERATOR".center(100))
     print("=" * 100)
     
     course = build_course()
@@ -1035,7 +1326,7 @@ def main():
     quiz = generate_comprehensive_quiz(course)
     course["comprehensive_quiz"] = quiz
     
-    print("\n📄 Saving text files...")
+    print("\n📄 Saving backup files...")
     text_content = format_course_as_text(course)
     
     out_file_txt = "python_data_for_ai_curriculum.txt"
@@ -1047,13 +1338,18 @@ def main():
     with open(out_file_json, "w", encoding="utf-8") as f:
         json.dump(course, f, indent=2, ensure_ascii=False)
     
-    print(f"\n✅ Text files saved: {out_file_txt}, {out_file_json}")
+    print(f"✅ Backup files saved: {out_file_txt}, {out_file_json}")
+    
+    # Create hierarchical folder structure with markdown files
+    base_path = create_folder_structure(course)
+    
     print(f"\n📄 Creating PDF book...")
     pdf_file = generate_pdf_book(course, quiz)
     
     print(f"\n✅ PDF generated: {pdf_file}")
     print(f"📊 Quiz questions: {len(quiz.get('questions', []))}")
-    print(f"🎉 Complete! (~30-40 pages)\n")
+    print(f"📁 Folder structure created at: {base_path}/")
+    print(f"🎉 Complete! Content organized in Module → Lesson → Topics structure\n")
 
 if __name__ == "__main__":
     main()
